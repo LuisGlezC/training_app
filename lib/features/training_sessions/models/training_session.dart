@@ -5,6 +5,8 @@ class TrainingSession {
     required this.distance,
     required this.steps,
     this.isCompleted = false,
+    this.effortRating,
+    this.feelingNote,
   });
 
   final String title;
@@ -12,6 +14,8 @@ class TrainingSession {
   final String distance;
   final List<TrainingStep> steps;
   bool isCompleted;
+  int? effortRating;
+  String? feelingNote;
 }
 
 class TrainingStep {

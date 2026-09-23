@@ -68,6 +68,23 @@ class _SessionsPageState extends State<SessionsPage> {
     });
   }
 
+  Future<void> _showFeedbackDialog(TrainingSession session) async {
+    final feedback = await showDialog<_SessionFeedback>(
+      context: context,
+      builder: (_) => _FeedbackDialog(
+        initialEffortRating: session.effortRating ?? 5,
+        initialNote: session.feelingNote ?? '',
+      ),
+    );
+
+    if (feedback != null && mounted) {
+      setState(() {
+        session.effortRating = feedback.effortRating;
+        session.feelingNote = feedback.note.isEmpty ? null : feedback.note;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final completedCount =
@@ -109,11 +126,145 @@ class _SessionsPageState extends State<SessionsPage> {
                       subtitle: Text('${step.target}\n${step.description}'),
                       isThreeLine: true,
                     ),
+                  if (_sessions[index].isCompleted) ...[
+                    if (_sessions[index].effortRating != null)
+                      ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.favorite_outline),
+                        title: Text(
+                          'Esfuerzo percibido: '
+                          '${_sessions[index].effortRating} de 10',
+                        ),
+                        subtitle: _sessions[index].feelingNote == null
+                            ? null
+                            : Text(_sessions[index].feelingNote!),
+                      ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () =>
+                            _showFeedbackDialog(_sessions[index]),
+                        icon: Icon(
+                          _sessions[index].effortRating == null
+                              ? Icons.add_comment_outlined
+                              : Icons.edit_outlined,
+                        ),
+                        label: Text(
+                          _sessions[index].effortRating == null
+                              ? 'Registrar sensaciones'
+                              : 'Editar sensaciones',
+                        ),
+                      ),
+                    ),
+                  ] else
+                    const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: Text(
+                        'Marca la sesión como completada para registrar '
+                        'tus sensaciones.',
+                      ),
+                    ),
                 ],
               ),
             ),
         ],
       ),
+    );
+  }
+}
+
+class _SessionFeedback {
+  const _SessionFeedback({
+    required this.effortRating,
+    required this.note,
+  });
+
+  final int effortRating;
+  final String note;
+}
+
+class _FeedbackDialog extends StatefulWidget {
+  const _FeedbackDialog({
+    required this.initialEffortRating,
+    required this.initialNote,
+  });
+
+  final int initialEffortRating;
+  final String initialNote;
+
+  @override
+  State<_FeedbackDialog> createState() => _FeedbackDialogState();
+}
+
+class _FeedbackDialogState extends State<_FeedbackDialog> {
+  late final TextEditingController _noteController;
+  late int _effortRating;
+
+  @override
+  void initState() {
+    super.initState();
+    _noteController = TextEditingController(text: widget.initialNote);
+    _effortRating = widget.initialEffortRating;
+  }
+
+  @override
+  void dispose() {
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('¿Cómo te sentiste?'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Esfuerzo percibido: $_effortRating de 10'),
+            Slider(
+              value: _effortRating.toDouble(),
+              min: 1,
+              max: 10,
+              divisions: 9,
+              label: '$_effortRating',
+              onChanged: (value) {
+                setState(() {
+                  _effortRating = value.round();
+                });
+              },
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _noteController,
+              maxLines: 3,
+              maxLength: 300,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'Agrega una nota sobre tus sensaciones',
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () {
+            Navigator.of(context).pop(
+              _SessionFeedback(
+                effortRating: _effortRating,
+                note: _noteController.text.trim(),
+              ),
+            );
+          },
+          child: const Text('Guardar'),
+        ),
+      ],
     );
   }
 }
