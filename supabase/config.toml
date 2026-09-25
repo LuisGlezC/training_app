@@ -1,0 +1,2 @@
+[functions.polar-callback]
+verify_jwt = false
