@@ -90,8 +90,9 @@ athlete has registered with this client. See the
 
 ## Garmin Connect Activity API
 
-The activity schema already reserves `garmin` as a provider, but Garmin
-authorization and importing are not enabled yet. Garmin's Activity API is a
+The activity schema already reserves `garmin` as a provider. OAuth
+authorization and automatic imports are not enabled yet; the app supports
+manual TCX/GPX imports described below. Garmin's Activity API is a
 cloud-to-cloud service, uses OAuth 2.0, and requires approval to join its
 Developer Program. Garmin describes the program as intended for business or
 enterprise integrations; approved developers can get an evaluation
@@ -103,3 +104,12 @@ application is approved and Garmin provides the integration details. Once
 access is granted, implement its OAuth callback and activity delivery method
 in Edge Functions, then normalize the approved activity fields into
 `wearable_activities`.
+
+While API access is pending, athletes can import one Garmin Connect activity
+at a time from an exported `.tcx` or `.gpx` file on the **Reloj y actividades**
+screen. In Garmin Connect web, open **Activities → All Activities**, open the
+activity, select the settings gear, and export as TCX or GPX. The app parses the
+file locally and stores only its summary in Supabase; GPX track coordinates and
+the original file are not uploaded. FIT files are not supported by this manual
+import yet. Garmin's [export instructions](https://support.garmin.com/en-US/?faq=W1TvTPW8JZ6LfJSfK512Q8)
+list the available activity formats.

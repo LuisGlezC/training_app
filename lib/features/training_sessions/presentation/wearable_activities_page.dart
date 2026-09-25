@@ -1,9 +1,12 @@
 import 'dart:async';
 
 import 'package:app_links/app_links.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import '../data/manual_activity_importer.dart';
 
 class WearableActivitiesPage extends StatefulWidget {
   const WearableActivitiesPage({
@@ -22,6 +25,7 @@ class WearableActivitiesPage extends StatefulWidget {
 class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
   final _client = Supabase.instance.client;
   final _appLinks = AppLinks();
+  final _activityImporter = const ManualActivityImporter();
   StreamSubscription<Uri>? _linkSubscription;
   List<_WearableActivity> _activities = [];
   List<_AssignedTraining> _sessions = [];
@@ -81,12 +85,17 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
     }
     try {
       final userId = _client.auth.currentUser!.id;
-      final status = await _client.functions.invoke(
-        'polar-connect',
-        method: HttpMethod.get,
-      );
-      final statusData = status.data as Map<String, dynamic>;
-      final connected = statusData['connected'] == true;
+      var connected = false;
+      try {
+        final status = await _client.functions.invoke(
+          'polar-connect',
+          method: HttpMethod.get,
+        );
+        final statusData = status.data as Map<String, dynamic>;
+        connected = statusData['connected'] == true;
+      } catch (_) {
+        // Manual imports and saved activities remain available without Polar.
+      }
       final activityRows = await _client
           .from('wearable_activities')
           .select(
@@ -160,14 +169,17 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
       final count = result['imported'] as int? ?? 0;
       await _loadData();
       if (mounted) {
-        setState(() => _message = count == 0
-            ? 'No hay actividades nuevas para importar.'
-            : 'Se importaron $count actividades de Polar.');
+        setState(
+          () => _message = count == 0
+              ? 'No hay actividades nuevas para importar.'
+              : 'Se importaron $count actividades de Polar.',
+        );
       }
     } on FunctionException catch (error) {
       if (mounted) setState(() => _error = _functionMessage(error));
     } catch (error) {
-      if (mounted) setState(() => _error = 'No se pudieron importar actividades: $error');
+      if (mounted)
+        setState(() => _error = 'No se pudieron importar actividades: $error');
     } finally {
       if (mounted) setState(() => _isBusy = false);
     }
@@ -208,7 +220,79 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
     } on FunctionException catch (error) {
       if (mounted) setState(() => _error = _functionMessage(error));
     } catch (error) {
-      if (mounted) setState(() => _error = 'No se pudo desconectar Polar: $error');
+      if (mounted)
+        setState(() => _error = 'No se pudo desconectar Polar: $error');
+    } finally {
+      if (mounted) setState(() => _isBusy = false);
+    }
+  }
+
+  Future<void> _importGarminFile() async {
+    setState(() {
+      _isBusy = true;
+      _error = null;
+      _message = null;
+    });
+    try {
+      final file = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: const ['tcx', 'gpx'],
+      );
+      if (file == null) return;
+      final fileLength = file.lengthSync() ?? await file.length();
+      if (fileLength == null || fileLength == 0) {
+        throw const FormatException('El archivo está vacío o no se pudo leer.');
+      }
+      if (fileLength > 25 * 1024 * 1024) {
+        throw const FormatException(
+          'El archivo supera el límite de 25 MB para una actividad.',
+        );
+      }
+      final imported = _activityImporter.parse(
+        fileName: file.name,
+        bytes: await file.readAsBytes(),
+      );
+      final athleteId = _client.auth.currentUser!.id;
+      final ids = imported
+          .map((activity) => activity.providerActivityId)
+          .toList();
+      final existingRows = await _client
+          .from('wearable_activities')
+          .select('provider_activity_id')
+          .eq('athlete_id', athleteId)
+          .eq('provider', 'garmin')
+          .inFilter('provider_activity_id', ids);
+      final existingIds = existingRows
+          .map((row) => row['provider_activity_id'] as String)
+          .toSet();
+      final newActivities = imported
+          .where(
+            (activity) => !existingIds.contains(activity.providerActivityId),
+          )
+          .toList();
+      if (newActivities.isNotEmpty) {
+        await _client
+            .from('wearable_activities')
+            .insert(
+              newActivities
+                  .map((activity) => activity.toDatabaseRow(athleteId))
+                  .toList(),
+            );
+      }
+      await _loadData();
+      if (mounted) {
+        setState(() {
+          _message = newActivities.isEmpty
+              ? 'Ese archivo ya se había importado.'
+              : 'Se importaron ${newActivities.length} actividades de Garmin.';
+        });
+      }
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'No se pudo importar el archivo: $error');
+      }
     } finally {
       if (mounted) setState(() => _isBusy = false);
     }
@@ -216,7 +300,9 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
 
   Future<void> _linkActivity(_WearableActivity activity) async {
     if (_sessions.isEmpty) {
-      setState(() => _error = 'Todavía no tienes sesiones asignadas en este club.');
+      setState(
+        () => _error = 'Todavía no tienes sesiones asignadas en este club.',
+      );
       return;
     }
     final selectedId = await showDialog<String>(
@@ -246,7 +332,8 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
           .eq('id', activity.id)
           .eq('athlete_id', _client.auth.currentUser!.id);
       await _loadData();
-      if (mounted) setState(() => _message = 'Actividad vinculada a la sesión.');
+      if (mounted)
+        setState(() => _message = 'Actividad vinculada a la sesión.');
     } catch (error) {
       if (mounted) setState(() => _error = 'No se pudo vincular: $error');
     } finally {
@@ -300,12 +387,14 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Polar Flow · ${widget.clubName}',
-                        style: Theme.of(context).textTheme.titleMedium),
+                    Text(
+                      'Polar Flow · ${widget.clubName}',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 6),
-                    Text(_isConnected
-                        ? 'Cuenta Polar conectada.'
-                        : 'Conecta Polar Flow para importar tus entrenamientos.'),
+                    Text(
+                      _isConnected ? 'Cuenta Polar conectada.' : 'Conecta Polar Flow para importar tus entrenamientos.',
+                    ),
                     const SizedBox(height: 12),
                     if (_isConnected) ...[
                       FilledButton.icon(
@@ -334,8 +423,10 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Garmin Connect',
-                        style: Theme.of(context).textTheme.titleMedium),
+                    Text(
+                      'Garmin Connect',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 6),
                     const Text(
                       'La conexión estará disponible cuando Garmin apruebe el '
@@ -352,6 +443,32 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
                       ),
                       icon: const Icon(Icons.open_in_new),
                       label: const Text('Ver requisitos de Garmin'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Importación manual desde Garmin Connect',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Exporta una actividad como TCX o GPX desde Garmin Connect '
+                      'y selecciónala aquí. La app procesa el archivo en el '
+                      'teléfono y guarda solo el resumen de la actividad.',
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: _isBusy ? null : _importGarminFile,
+                      icon: const Icon(Icons.upload_file_outlined),
+                      label: const Text('Elegir archivo TCX o GPX'),
                     ),
                   ],
                 ),
@@ -375,8 +492,10 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
                 ),
               ),
             const SizedBox(height: 16),
-            Text('Actividades importadas',
-                style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              'Actividades importadas',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             if (_isLoading)
               const Padding(
                 padding: EdgeInsets.all(24),
@@ -397,27 +516,35 @@ class _WearableActivitiesPageState extends State<WearableActivitiesPage> {
                         ListTile(
                           leading: const Icon(Icons.directions_run),
                           title: Text(activity.title),
-                          subtitle: Text([
-                            _formatDate(activity.startedAt.toLocal()),
-                            _formatDuration(activity.durationSeconds),
-                            if (activity.distanceMeters != null)
-                              '${(activity.distanceMeters! / 1000).toStringAsFixed(2)} km',
-                            if (activity.averageHeartRate != null)
-                              'FC media ${activity.averageHeartRate} bpm',
-                            if (activity.maximumHeartRate != null)
-                              'FC máx. ${activity.maximumHeartRate} bpm',
-                          ].join(' · ')),
+                          subtitle: Text(
+                            [
+                              _formatDate(activity.startedAt.toLocal()),
+                              _formatDuration(activity.durationSeconds),
+                              if (activity.distanceMeters != null)
+                                '${(activity.distanceMeters! / 1000).toStringAsFixed(2)} km',
+                              if (activity.averageHeartRate != null)
+                                'FC media ${activity.averageHeartRate} bpm',
+                              if (activity.maximumHeartRate != null)
+                                'FC máx. ${activity.maximumHeartRate} bpm',
+                            ].join(' · '),
+                          ),
                         ),
                         Align(
                           alignment: Alignment.centerRight,
                           child: TextButton.icon(
-                            onPressed: _isBusy ? null : () => _linkActivity(activity),
-                            icon: Icon(activity.linkedSessionId == null
-                                ? Icons.link
-                                : Icons.link_off),
-                            label: Text(activity.linkedSessionId == null
-                                ? 'Vincular a una sesión'
-                                : _linkedSessionTitle(activity)),
+                            onPressed: _isBusy
+                                ? null
+                                : () => _linkActivity(activity),
+                            icon: Icon(
+                              activity.linkedSessionId == null
+                                  ? Icons.link
+                                  : Icons.link_off,
+                            ),
+                            label: Text(
+                              activity.linkedSessionId == null
+                                  ? 'Vincular a una sesión'
+                                  : _linkedSessionTitle(activity),
+                            ),
                           ),
                         ),
                       ],
